@@ -4,7 +4,7 @@
 from __future__ import division
 
 import copy
-from fnmatch import translate
+from fnmatch import translate, fnmatch
 from math import isinf, isnan
 from os.path import isfile
 from re import compile
@@ -247,6 +247,11 @@ class OpenMetricsScraperMixin(object):
         config['type_overrides'] = default_instance.get('type_overrides', {})
         config['type_overrides'].update(instance.get('type_overrides', {}))
 
+        # `_matched_type_overrides` is a dictionary where we cache the known metric names
+        # that match the `type_overrides` wildcard configurations.
+        # Using `_matched_type_overrides` will avoid calling fnmatch in every check run.
+        config['_matched_type_overrides'] = {}
+
         # Some metrics are retrieved from differents hosts and often
         # a label can hold this information, this transfers it to the hostname
         config['label_to_hostname'] = instance.get('label_to_hostname', default_instance.get('label_to_hostname', None))
@@ -392,7 +397,17 @@ class OpenMetricsScraperMixin(object):
             self._send_telemetry_counter(
                 self.TELEMETRY_COUNTER_METRICS_INPUT_COUNT, len(metric.samples), scraper_config
             )
-            metric.type = scraper_config['type_overrides'].get(metric.name, metric.type)
+            type_override = scraper_config['type_overrides'].get(metric.name)
+            matched_type_override = scraper_config['_matched_type_overrides'].get(metric.name)
+            if type_override:
+                metric.type = type_override
+            elif matched_type_override:
+                metric.type = matched_type_override
+            elif scraper_config['type_overrides']:
+                for name_pattern, new_type in iteritems(scraper_config['type_overrides']):
+                    if fnmatch(metric.name, name_pattern):
+                        metric.type = new_type
+                        scraper_config['_matched_type_overrides'][metric.name] = new_type
             if metric.type not in self.METRIC_TYPES:
                 continue
             metric.name = self._remove_metric_prefix(metric.name, scraper_config)
